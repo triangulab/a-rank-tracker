@@ -115,6 +115,6 @@ async def update_loop():
                 await CURRENT_MESSAGE.edit(embed=build_embed(), view=build_view())
             except discord.errors.HTTPException as e:
                 print(f"⏳ Rate limited or failed to edit message: {e}")
-        await asyncio.sleep(60)  # update every 30 seconds
+        await asyncio.sleep(60)  # update every 60 seconds
 
 bot.run(os.environ["BOT_TOKEN"])
