@@ -5,9 +5,6 @@ import os
 from datetime import datetime, timedelta, timezone
 import asyncio
 import discord.errors
-from dotenv import load_dotenv  # <-- Added dotenv import
-
-load_dotenv()  # <-- Load environment variables from .env file
 
 # Intents and bot setup
 intents = discord.Intents.default()
