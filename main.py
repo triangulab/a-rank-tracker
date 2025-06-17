@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 import discord.errors
 
@@ -28,7 +28,6 @@ A_RANKS = [
 ]
 
 STATUS = {rank: {"last_killed": datetime.utcnow()} for rank in A_RANKS}
-
 
 # Displays time since kill and if it's 100% spawn chance
 def get_spawn_status_display(last_killed):
@@ -66,6 +65,13 @@ def build_view():
     for rank in A_RANKS:
         view.add_item(ToggleButton(rank))
     return view
+
+@bot.command()
+async def sethours(ctx, hours: float):
+    now = datetime.utcnow()
+    for rank in STATUS:
+        STATUS[rank]["last_killed"] = now - timedelta(hours=hours)
+    await ctx.send(f"🕒 All A-Rank timers set to {hours}h ago.")
 
 @bot.event
 async def on_ready():
