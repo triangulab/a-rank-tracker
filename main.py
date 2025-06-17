@@ -1,154 +1,120 @@
-import tkinter as tk
-from tkinter import messagebox
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
-from docx import Document
-from docx.shared import RGBColor
-import time
-import undetected_chromedriver as uc
+import discord
+from discord.ext import commands
+from discord.ui import Button, View
+import os
+from datetime import datetime
+import asyncio
+import discord.errors
 
-def launch_browser():
-    options = uc.ChromeOptions()
-    options.add_argument(r"--user-data-dir=C:/Users/flexa/AppData/Local/Google/Chrome/User Data")
-    options.add_argument("--profile-directory=Profile 1")
-    return uc.Chrome(options=options, headless=False)
+# Intents and bot setup
+intents = discord.Intents.default()
 
+class HuntBot(commands.Bot):
+    async def setup_hook(self):
+        self.loop.create_task(update_loop())
 
-def fetch_menu_items(driver, url):
-    driver.get(url)
-    time.sleep(5)
+bot = HuntBot(command_prefix="!", intents=intents)
 
-    print("[DEBUG] Starting smart scroll...")
+SERVER = "Halicarnassus"
+CHANNEL_ID = int(os.environ["CHANNEL_ID"])
+CURRENT_MESSAGE = None
+MESSAGE_PIN_KEY = "a_rank_tracker_pin"
 
-    scroll_pause_time = 1.0
-    scroll_attempts = 0
-    max_scrolls = 50
-    last_scroll_position = -1
+A_RANKS = [
+    "Queen Hawk", "Nechuciho", "The Raintriller", "Pkuucha",
+    "Starcrier 1", "Rrax Yity'a 1", "Starcrier 2", "Rrax Yity'a 2",
+    "Yehehetoaua'pyo", "Keheniheyamewi", "Heshuala",
+    "Urna Variabilis", "Sally the Sweeper", "Cat's Eye"
+]
 
-    for _ in range(max_scrolls):
-        driver.execute_script("window.scrollBy(0, 500);")
-        time.sleep(scroll_pause_time)
-        current_position = driver.execute_script("return window.pageYOffset;")
-        if current_position == last_scroll_position:
-            scroll_attempts += 1
-            if scroll_attempts > 3:
-                break
-        else:
-            scroll_attempts = 0
-        last_scroll_position = current_position
-
-    print("[DEBUG] Finished scrolling")
-
-    # 🔻 NEW: Save what Selenium actually sees in the browser
-    with open("page_dump.html", "w", encoding="utf-8") as f:
-        f.write(driver.page_source)
-    print("[DEBUG] Dumped live HTML to page_dump.html")
-
-    # Try to find menu items
-    containers = driver.find_elements(By.XPATH, "//div[@data-anchor-id='MenuItem']")
-    print(f"[DEBUG] Found {len(containers)} menu items")
-
-    items = []
-
-    for c in containers:
-        try:
-            button = c.find_element(By.XPATH, ".//div[@role='button' and @aria-label]")
-            aria = button.get_attribute("aria-label")
-            print(f"[DEBUG] aria-label: {aria}")
-        except:
-            continue
-
-        if "$" in aria:
-            try:
-                name_part, price_part = aria.rsplit("$", 1)
-                name = name_part.strip()
-                price = f"${price_part.strip()}"
-            except:
-                name = aria.strip()
-                price = "Check Price"
-        else:
-            name = aria.strip()
-            price = "Check Price"
-
-        items.append({
-            "category": "Menu",
-            "name": name,
-            "price": price,
-            "description": ""
-        })
-
-    print(f"[DEBUG] Parsed {len(items)} menu items")
-    return items
+STATUS = {rank: {"last_killed": datetime.utcnow()} for rank in A_RANKS}
 
 
-def create_word_doc(menu_items, filename="menu_output.docx"):
-    doc = Document()
-    current_category = None
+# Displays time since kill and if it's 100% spawn chance
+def get_spawn_status_display(last_killed):
+    if last_killed is None:
+        return "❓ Unknown"
 
-    for item in menu_items:
-        if item["category"] != current_category:
-            current_category = item["category"]
-            doc.add_heading(current_category, level=1)
+    hours = (datetime.utcnow() - last_killed).total_seconds() / 3600
+    hours_str = f"{hours:.1f}h"
 
-        p = doc.add_paragraph()
-        run = p.add_run(item["name"] + " ")
-        run.bold = True
+    if hours >= 6:
+        return f"🟢 {hours_str}"
+    else:
+        return f"🔴 {hours_str}"
 
-        run = p.add_run(item["price"])
-        run.font.color.rgb = RGBColor(0, 102, 204)  # Blue
+def build_embed():
+    embed = discord.Embed(title=f"🧭 {SERVER} – Dawntrail A-Ranks", color=0x00b0f4)
+    for rank in A_RANKS:
+        last_killed = STATUS[rank]["last_killed"]
+        timer = get_spawn_status_display(last_killed)
+        embed.add_field(name=rank, value=timer, inline=False)
+    embed.set_footer(text="Tap a button to mark kill time.")
+    return embed
 
-        if item["description"]:
-            desc = doc.add_paragraph(item["description"])
-            desc.runs[0].font.color.rgb = RGBColor(0, 153, 0)  # Green
+class ToggleButton(Button):
+    def __init__(self, rank):
+        super().__init__(label=rank, style=discord.ButtonStyle.secondary)
+        self.rank = rank
 
-    doc.save(filename)
-    return filename
+    async def callback(self, interaction: discord.Interaction):
+        STATUS[self.rank]["last_killed"] = datetime.utcnow()
+        await interaction.response.edit_message(embed=build_embed(), view=build_view())
 
-def download_menu():
-    url = url_entry.get().strip()
+def build_view():
+    view = View()
+    for rank in A_RANKS:
+        view.add_item(ToggleButton(rank))
+    return view
 
-    # Add https:// if missing
-    if not url.startswith("http"):
-        url = "https://" + url
+@bot.event
+async def on_ready():
+    print(f"✅ Logged in as {bot.user}")
+    global CURRENT_MESSAGE
+    channel = bot.get_channel(CHANNEL_ID)
 
-    # Basic URL check
-    if "doordash.com" not in url:
-        messagebox.showerror("Error", "Please enter a valid DoorDash link.")
+    if not channel:
+        print("❌ Channel not found.")
         return
 
-    status_var.set("Loading browser...")
-    root.update()
+    # Unpin and delete all previously pinned messages
+    pinned_messages = await channel.pins()
+    for msg in pinned_messages:
+        if msg.author == bot.user:
+            try:
+                await msg.unpin()
+                await msg.delete()
+                print(f"🗑️ Unpinned and deleted old message: {msg.id}")
+            except Exception as e:
+                print(f"⚠️ Failed to unpin or delete message {msg.id}: {e}")
 
-    try:
-        driver = launch_browser()
-        status_var.set("Scraping menu...")
-        root.update()
-        menu_items = fetch_menu_items(driver, url)
-        status_var.set("Saving Word file...")
-        root.update()
-        doc_name = create_word_doc(menu_items)
-        status_var.set("Done! Saved to " + doc_name)
-        driver.quit()
-    except Exception as e:
-        status_var.set("Failed.")
-        messagebox.showerror("Error", str(e))
+    # Send and pin a fresh new message
+    CURRENT_MESSAGE = await channel.send(embed=build_embed(), view=build_view())
+    await CURRENT_MESSAGE.pin()
+    print("📌 Sent and pinned new message.")
 
-# --- GUI ---
-root = tk.Tk()
-root.title("DoorDash Menu Extractor")
+    # Try to delete the automatic pin system message
+    await asyncio.sleep(1)  # Give Discord time to post it
+    async for msg in channel.history(limit=5):
+        if msg.type == discord.MessageType.pins_add and msg.author == bot.user:
+            try:
+                await msg.delete()
+                print("🧹 Deleted system pin message.")
+            except Exception as e:
+                print(f"⚠️ Failed to delete pin message: {e}")
+            break
 
-tk.Label(root, text="Enter DoorDash menu link:").pack(pady=(10, 0))
+@bot.event
+async def update_loop():
+    await bot.wait_until_ready()
+    global CURRENT_MESSAGE
 
-url_entry = tk.Entry(root, width=60)
-url_entry.pack(pady=5)
+    while not bot.is_closed():
+        if CURRENT_MESSAGE:
+            try:
+                await CURRENT_MESSAGE.edit(embed=build_embed(), view=build_view())
+            except discord.errors.HTTPException as e:
+                print(f"⏳ Rate limited or failed to edit message: {e}")
+        await asyncio.sleep(60)  # update every 30 seconds
 
-tk.Button(root, text="Download Menu", command=download_menu).pack(pady=10)
-
-status_var = tk.StringVar()
-status_label = tk.Label(root, textvariable=status_var, fg="blue")
-status_label.pack()
-
-root.mainloop()
+bot.run(os.environ["BOT_TOKEN"])
