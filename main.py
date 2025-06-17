@@ -8,6 +8,7 @@ import discord.errors
 
 # Intents and bot setup
 intents = discord.Intents.default()
+intents.message_content = True
 
 class HuntBot(commands.Bot):
     async def setup_hook(self):
