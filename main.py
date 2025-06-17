@@ -68,9 +68,34 @@ def build_view():
 
 @bot.command()
 async def sethours(ctx, hours: float):
+    global CURRENT_MESSAGE
     now = datetime.utcnow()
     for rank in STATUS:
         STATUS[rank]["last_killed"] = now - timedelta(hours=hours)
+
+    # Unpin and delete the current tracker message
+    channel = bot.get_channel(CHANNEL_ID)
+    if CURRENT_MESSAGE:
+        try:
+            await CURRENT_MESSAGE.unpin()
+            await CURRENT_MESSAGE.delete()
+        except Exception as e:
+            print(f"⚠️ Failed to unpin or delete CURRENT_MESSAGE: {e}")
+
+    # Send and pin a new updated message
+    CURRENT_MESSAGE = await channel.send(embed=build_embed(), view=build_view())
+    await CURRENT_MESSAGE.pin()
+
+    # Clean up pin notification
+    await asyncio.sleep(1)
+    async for msg in channel.history(limit=5):
+        if msg.type == discord.MessageType.pins_add and msg.author == bot.user:
+            try:
+                await msg.delete()
+            except Exception as e:
+                print(f"⚠️ Failed to delete pin message: {e}")
+            break
+
     await ctx.send(f"🕒 All A-Rank timers set to {hours}h ago.")
 
 @bot.event
