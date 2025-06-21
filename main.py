@@ -5,6 +5,9 @@ import os
 from datetime import datetime, timedelta, timezone
 import asyncio
 import discord.errors
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+import uvicorn
 
 # Intents and bot setup
 intents = discord.Intents.default()
@@ -29,7 +32,7 @@ class HuntBot(commands.Bot):
 bot = HuntBot(command_prefix="!", intents=intents)
 
 SERVER = "Halicarnassus"
-CHANNEL_ID = int(os.environ["CHANNEL_ID"])
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 CURRENT_MESSAGE = None
 MESSAGE_PIN_KEY = "a_rank_tracker_pin"
 
@@ -50,7 +53,19 @@ ZONED_A_RANKS = {
     "Living Memory": ["Sally the Sweeper", "Cat's Eye"]
 }
 
-STATUS = {rank: {"last_killed": datetime.now(timezone.utc) + timedelta(hours=2, minutes=24)} for rank in A_RANKS}
+WORLDS = [
+    "Halicarnassus",
+    "Cuchulainn",
+    "Golem",
+    "Kraken",
+    "Seraph",
+    "Maduin",
+    "Marilith",
+    "Rafflesia"
+]
+
+STATUS = {world: {rank: {"last_killed": datetime.now(timezone.utc) + timedelta(hours=2, minutes=24)} for rank in A_RANKS} for world in WORLDS}
+CURRENT_MESSAGE = {world: None for world in WORLDS}
 
 # Displays time since kill and if it's 100% spawn chance
 def get_spawn_status_display(last_killed, now):
@@ -101,194 +116,119 @@ def get_spawn_status_display(last_killed, now):
     return f"⚪ {time_str}"  # fallback
 
 
-def build_embed(now=None):
+# Update build_embed to take world as argument
+def build_embed(world, now=None):
     if not now:
         now = datetime.now(timezone.utc)
-
-    embed = discord.Embed(title=f"🧭 {SERVER} – Dawntrail A-Ranks", color=0x00b0f4)
-
+    embed = discord.Embed(title=f"🧭 {world} – Dawntrail A-Ranks", color=0x00b0f4)
     all_ranks = [rank for ranks in ZONED_A_RANKS.values() for rank in ranks]
-
     lines = []
     def shorten(name, length=18):
         return name if len(name) <= length else name[:length - 1] + "…"
-
     for i in range(0, len(all_ranks), 2):
         rank1 = all_ranks[i]
         rank2 = all_ranks[i + 1]
-
-        r1_timer = get_spawn_status_display(STATUS[rank1]["last_killed"], now)
-        r2_timer = get_spawn_status_display(STATUS[rank2]["last_killed"], now)
-
+        r1_timer = get_spawn_status_display(STATUS[world][rank1]["last_killed"], now)
+        r2_timer = get_spawn_status_display(STATUS[world][rank2]["last_killed"], now)
         r1_name = f"`{shorten(rank1, 18):<18}`"
         r2_name = f"`{shorten(rank2, 18):<18}`"
-
         line = f"{r1_name} {r1_timer}     {r2_name} {r2_timer}"
         lines.append(line)
-
     embed.add_field(name="\u200b", value="\n".join(lines), inline=True)
-    embed.set_footer(text="Tap a button to mark kill time.")
+    embed.set_footer(text="Tap a button to mark kill time. Use the correct world!")
     return embed
 
+# Update ToggleButton to take world
 class ToggleButton(Button):
-    def __init__(self, rank):
+    def __init__(self, world, rank):
         super().__init__(label=rank, style=discord.ButtonStyle.secondary)
         self.rank = rank
-
+        self.world = world
     async def callback(self, interaction: discord.Interaction):
         now = datetime.now(timezone.utc)
-        STATUS[self.rank]["last_killed"] = now + timedelta(hours=4)
-        await interaction.response.edit_message(embed=build_embed(now), view=build_view())
+        STATUS[self.world][self.rank]["last_killed"] = now + timedelta(hours=4)
+        await interaction.response.edit_message(embed=build_embed(self.world, now), view=build_view(self.world))
 
-def build_view():
+def build_view(world):
     view = View()
     for rank in A_RANKS:
-        view.add_item(ToggleButton(rank))
+        view.add_item(ToggleButton(world, rank))
     return view
 
-@bot.command(name="setall", usage="<time>")
-async def setall(ctx, time_input: str = None):
-    if not time_input:
-        await ctx.send("❌ Missing time input. Usage: !setall <time>", delete_after=5)
+# Update commands to require world as first argument
+@bot.command(name="setall", usage="<world> <time>")
+async def setall(ctx, world: str = None, time_input: str = None):
+    if not world or world not in WORLDS or not time_input:
+        await ctx.send(f"❌ Usage: !setall <world> <time>\nWorlds: {', '.join(WORLDS)}", delete_after=6)
         await ctx.message.delete()
         return
-
     try:
-        # Handle HH:MM and decimal formats, both with optional "-"
         sign = -1 if time_input.strip().startswith("-") else 1
         time_input = time_input.strip().lstrip("-")
-
         if ":" in time_input:
             hours, minutes = map(int, time_input.split(":"))
         else:
             decimal_hours = float(time_input)
             hours = int(decimal_hours)
             minutes = int((decimal_hours - hours) * 60)
-
         offset = timedelta(hours=hours * sign, minutes=minutes * sign)
     except Exception:
-        await ctx.send(
-            f"❌ Invalid time format: `{time_input}`. Use `HH:MM` or decimal hours. Ex: `-2:30` or `-2.5`",
-            delete_after=6,
-        )
+        await ctx.send(f"❌ Invalid time format: `{time_input}`. Use `HH:MM` or decimal hours.", delete_after=6)
         await ctx.message.delete()
         return
-
     now = datetime.now(timezone.utc)
     for rank in A_RANKS:
-        STATUS[rank]["last_killed"] = datetime.now(timezone.utc) - offset
-
-    # Update the pinned message
-    global CURRENT_MESSAGE
-    if CURRENT_MESSAGE:
+        STATUS[world][rank]["last_killed"] = datetime.now(timezone.utc) - offset
+    if CURRENT_MESSAGE[world]:
         try:
-            await CURRENT_MESSAGE.edit(embed=build_embed(), view=build_view())
+            await CURRENT_MESSAGE[world].edit(embed=build_embed(world), view=build_view(world))
         except Exception as e:
             print(f"⚠️ Failed to update tracker message: {e}")
-
     try:
         await ctx.message.delete()
     except Exception as e:
         print(f"⚠️ Could not delete user command: {e}")
 
-@bot.command(name="setsingle", usage="<A-Rank Name> <time>")
+@bot.command(name="set", usage="<world> <A-Rank Name> <time>")
 async def set_timer(ctx, *, args: str = None):
-    if not args or " " not in args.strip():
-        await ctx.send("❌ Usage: !set <A-Rank Name> <time> — Example: !set 'Rrax Yity'a 1' -2:00", delete_after=6)
+    if not args or len(args.strip().split()) < 3:
+        await ctx.send(f"❌ Usage: !set <world> <A-Rank Name> <time>\nWorlds: {', '.join(WORLDS)}", delete_after=6)
         await ctx.message.delete()
         return
-
+    parts = args.strip().split()
+    world = parts[0]
+    if world not in WORLDS:
+        await ctx.send(f"❌ Unknown world: `{world}`\nWorlds: {', '.join(WORLDS)}", delete_after=6)
+        await ctx.message.delete()
+        return
+    *rank_parts, time_input = parts[1:]
+    rank_name = " ".join(rank_parts[:-1]) if len(rank_parts) > 1 else rank_parts[0]
+    time_input = rank_parts[-1] if len(rank_parts) > 1 else time_input
+    matched_rank = next((r for r in A_RANKS if r.lower() == rank_name.lower()), None)
+    if not matched_rank:
+        await ctx.send(f"❌ Unknown A-Rank: `{rank_name}`", delete_after=6)
+        await ctx.message.delete()
+        return
     try:
-        *rank_parts, time_input = args.strip().split()
-        rank_name = " ".join(rank_parts)
-
-        # Fuzzy match to handle case/capitalization
-        matched_rank = next((r for r in A_RANKS if r.lower() == rank_name.lower()), None)
-        if not matched_rank:
-            await ctx.send(f"❌ Unknown A-Rank: `{rank_name}`", delete_after=6)
-            await ctx.message.delete()
-            return
-
         sign = -1 if time_input.strip().startswith("-") else 1
         time_input = time_input.strip().lstrip("-")
-
         if ":" in time_input:
             hours, minutes = map(int, time_input.split(":"))
         else:
             decimal_hours = float(time_input)
             hours = int(decimal_hours)
             minutes = int((decimal_hours - hours) * 60)
-
         offset = timedelta(hours=hours * sign, minutes=minutes * sign)
     except Exception:
-        await ctx.send(
-            f"❌ Invalid format. Example: `!set \"Rrax Yity'a 1\" -2:00` or `!set Cat's Eye 1.5`",
-            delete_after=6
-        )
+        await ctx.send(f"❌ Invalid format. Example: `!set {world} 'Rrax Yity'a 1' -2:00`", delete_after=6)
         await ctx.message.delete()
         return
-    
-    now = datetime.now(timezone.utc)
-    STATUS[matched_rank]["last_killed"] = datetime.now(timezone.utc) - offset
-
-    global CURRENT_MESSAGE
-    if CURRENT_MESSAGE:
+    STATUS[world][matched_rank]["last_killed"] = datetime.now(timezone.utc) - offset
+    if CURRENT_MESSAGE[world]:
         try:
-            await CURRENT_MESSAGE.edit(embed=build_embed(), view=build_view())
+            await CURRENT_MESSAGE[world].edit(embed=build_embed(world), view=build_view(world))
         except Exception as e:
             print(f"⚠️ Failed to update message: {e}")
-
-    try:
-        await ctx.message.delete()
-    except Exception as e:
-        print(f"⚠️ Could not delete command message: {e}")
-
-@bot.command(name="set", usage="<A-Rank Name> <time>")
-async def set_timer(ctx, *, args: str = None):
-    if not args or " " not in args.strip():
-        await ctx.send("❌ Usage: !set <A-Rank Name> <time> — Example: !set 'Rrax Yity'a 1' -2:00", delete_after=6)
-        await ctx.message.delete()
-        return
-
-    try:
-        *rank_parts, time_input = args.strip().split()
-        rank_name = " ".join(rank_parts)
-
-        # Fuzzy match to handle case/capitalization
-        matched_rank = next((r for r in A_RANKS if r.lower() == rank_name.lower()), None)
-        if not matched_rank:
-            await ctx.send(f"❌ Unknown A-Rank: `{rank_name}`", delete_after=6)
-            await ctx.message.delete()
-            return
-
-        sign = -1 if time_input.strip().startswith("-") else 1
-        time_input = time_input.strip().lstrip("-")
-
-        if ":" in time_input:
-            hours, minutes = map(int, time_input.split(":"))
-        else:
-            decimal_hours = float(time_input)
-            hours = int(decimal_hours)
-            minutes = int((decimal_hours - hours) * 60)
-
-        offset = timedelta(hours=hours * sign, minutes=minutes * sign)
-    except Exception:
-        await ctx.send(
-            f"❌ Invalid format. Example: `!set \"Rrax Yity'a 1\" -2:00` or `!set Cat's Eye 1.5`",
-            delete_after=6
-        )
-        await ctx.message.delete()
-        return
-
-    STATUS[matched_rank]["last_killed"] = datetime.now(timezone.utc) - offset
-
-    global CURRENT_MESSAGE
-    if CURRENT_MESSAGE:
-        try:
-            await CURRENT_MESSAGE.edit(embed=build_embed(), view=build_view())
-        except Exception as e:
-            print(f"⚠️ Failed to update message: {e}")
-
     try:
         await ctx.message.delete()
     except Exception as e:
@@ -299,26 +239,23 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     global CURRENT_MESSAGE
     channel = bot.get_channel(CHANNEL_ID)
-
     if not channel:
         print("❌ Channel not found.")
         return
-
-    pinned_messages = await channel.pins()
-    for msg in pinned_messages:
-        if msg.author == bot.user:
+    # Delete all messages in the channel before creating new ones
+    try:
+        async for msg in channel.history(limit=None):
             try:
-                await msg.unpin()
                 await msg.delete()
-                print(f"🗑️ Unpinned and deleted old message: {msg.id}")
             except Exception as e:
-                print(f"⚠️ Failed to unpin or delete message {msg.id}: {e}")
-                
+                print(f"⚠️ Could not delete message {msg.id}: {e}")
+    except Exception as e:
+        print(f"⚠️ Failed to fetch or delete messages: {e}")
     now = datetime.now(timezone.utc)
-    CURRENT_MESSAGE = await channel.send(embed=build_embed(), view=build_view())
-    await CURRENT_MESSAGE.pin()
-    print("📌 Sent and pinned new message.")
-
+    for world in WORLDS:
+        CURRENT_MESSAGE[world] = await channel.send(embed=build_embed(world), view=build_view(world))
+        await CURRENT_MESSAGE[world].pin()
+        print(f"📌 Sent and pinned new message for {world}.")
     await asyncio.sleep(1)
     async for msg in channel.history(limit=5):
         if msg.type == discord.MessageType.pins_add and msg.author == bot.user:
@@ -329,4 +266,32 @@ async def on_ready():
                 print(f"⚠️ Failed to delete pin message: {e}")
             break
 
-bot.run(os.environ["BOT_TOKEN"])
+# Replace Flask app with FastAPI
+app = FastAPI()
+
+@app.post("/sonar")
+async def sonar_webhook(data: dict):
+    world = data.get("world")
+    rank = data.get("rank")
+    if not world or not rank:
+        raise HTTPException(status_code=400, detail="Missing world or rank")
+    if world not in WORLDS:
+        raise HTTPException(status_code=400, detail=f"Unknown world: {world}")
+    matched_rank = next((r for r in A_RANKS if r.lower() == rank.lower()), None)
+    if not matched_rank:
+        raise HTTPException(status_code=400, detail=f"Unknown rank: {rank}")
+    # Update timer for this world/rank
+    STATUS[world][matched_rank]["last_killed"] = datetime.now(timezone.utc)
+    # Update the embed in Discord
+    if CURRENT_MESSAGE[world]:
+        coro = CURRENT_MESSAGE[world].edit(embed=build_embed(world), view=build_view(world))
+        asyncio.run_coroutine_threadsafe(coro, bot.loop)
+    return JSONResponse(content={"status": "ok"})
+
+async def start_bot():
+    await bot.start(os.getenv("BOT_TOKEN"))
+
+# Update the entry point to use uvicorn
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=5000)
+    asyncio.run(start_bot())

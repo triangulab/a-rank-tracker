@@ -1,15 +1,15 @@
-# fly.toml app configuration file generated for flexa-old-haze-5636 on 2025-06-17T04:25:26-05:00
+# fly.toml app configuration file generated for a-rank-tracker on 2025-06-20T23:16:57-05:00
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
 app = 'a-rank-tracker'
-primary_region = 'atl'
+primary_region = 'lax'
 
 [build]
 
 [http_service]
-  internal_port = 8080
+  internal_port = 5000
   force_https = true
   auto_stop_machines = 'stop'
   auto_start_machines = true
@@ -20,3 +20,7 @@ primary_region = 'atl'
   memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
+
+[experimental]
+private_network = true
+dns_servers = ["fdaa::3"]
