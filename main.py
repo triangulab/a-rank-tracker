@@ -289,10 +289,20 @@ async def sonar_webhook(data: dict):
     return JSONResponse(content={"status": "ok"})
 
 async def start_bot():
-    await bot.start(os.getenv("BOT_TOKEN"))
+    try:
+        bot_token = os.getenv("BOT_TOKEN")
+        if not bot_token:
+            print("❌ BOT_TOKEN environment variable is missing.")
+            return
+        await bot.start(bot_token)
+    except Exception as e:
+        print(f"❌ Failed to start bot: {e}")
 
 # Update the entry point to use uvicorn
 if __name__ == "__main__":
     import uvicorn
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_bot())
     uvicorn.run(app, host="0.0.0.0", port=5000)
-    asyncio.run(start_bot())
