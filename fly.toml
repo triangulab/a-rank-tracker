@@ -20,7 +20,3 @@ primary_region = 'lax'
   memory = '1gb'
   cpu_kind = 'shared'
   cpus = 1
-
-[experimental]
-private_network = true
-dns_servers = ["fdaa::3"]
